@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # MySQL 数据库服务
+  mysql:
+    image: mysql:8.0
+    container_name: chatroom-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456  # 设置root密码
+      MYSQL_DATABASE: chatroom         # 自动创建数据库
+      MYSQL_USER: chatroom_user        # 创建普通用户
+      MYSQL_PASSWORD: chatroom123      # 普通用户密码
+      TZ: Asia/Shanghai                # 时区设置
+    ports:
+      - "3306:3306"                    # 暴露端口，方便外部连接
+    volumes:
+      - mysql-data:/var/lib/mysql      # 数据持久化
+      - ./mysql/init:/docker-entrypoint-initdb.d  # 初始化脚本目录
+    networks:
+      - chatroom-network
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # 聊天室服务器
+  chatroom-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: chatroom-server
+    depends_on:
+      mysql:
+        condition: service_healthy  # 等待MySQL健康检查通过
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      - DB_TYPE=mysql               # 告诉服务器使用MySQL
+      - MYSQL_HOST=mysql            # MySQL服务名（Docker网络内部）
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=chatroom
+      - MYSQL_USER=chatroom_user
+      - MYSQL_PASSWORD=chatroom123
+      - PORT=8080
+      - HEALTH_PORT=8081
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data            # 用于存储日志或其他文件
+      - ./logs:/app/logs            # 日志目录
+    restart: unless-stopped
+    networks:
+      - chatroom-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 聊天室客户端
+  chatroom-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: chatroom-client
+    stdin_open: true
+    tty: true
+    environment:
+      - SERVER_HOST=chatroom-server
+      - SERVER_PORT=8080
+    depends_on:
+      chatroom-server:
+        condition: service_healthy
+    networks:
+      - chatroom-network
+    command: ["./client", "chatroom-server:8080"]
+    # 如果需要交互式测试，可以使用以下配置
+    # environment:
+    #   - TERM=xterm-256color
+
+# 定义卷
+volumes:
+  mysql-data:
+    driver: local
+
+# 定义网络
+networks:
+  chatroom-network:
+    driver: bridge
